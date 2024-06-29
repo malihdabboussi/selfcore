@@ -102,16 +102,73 @@ class Selfcore {
     }
   }
 
+  // static Gateway = class extends EventEmitter {
+  //   token: string;
+  //   interval: any;
+  //   ws: WebSocket;
+  //   payload: object;
+
+  //   constructor(token: string) {
+  //     super();
+  //     this.token = token;
+  //     this.ws = new WebSocket("wss://gateway.discord.gg/?v=6&encoding=json");
+  //     this.payload = {
+  //       op: 2,
+  //       d: {
+  //         token: this.token,
+  //         properties: {
+  //           $os: "linux",
+  //           $browser: "chrome",
+  //           $device: "chrome",
+  //         },
+  //       },
+  //     };
+  //     this.ws.on("open", () => {
+  //       this.ws.send(JSON.stringify(this.payload));
+  //     });
+
+  //     this.ws.on("message", (data: string) => {
+  //       let payload = JSON.parse(data);
+  //       const { t, event, op, d } = payload;
+
+  //       switch (op) {
+  //         case 10:
+  //           const { heartbeat_interval } = d;
+  //           this.interval = this.heartbeat(heartbeat_interval);
+  //           this.emit("ready");
+  //           break;
+  //       }
+
+  //       switch (t) {
+  //         case "MESSAGE_CREATE":
+  //           // console.log(d);
+  //           this.emit("message", d);
+  //       }
+  //     });
+  //   }
+  //   heartbeat = (ms: number) => {
+  //     return setInterval(() => {
+  //       this.ws.send(JSON.stringify({ op: 1, d: null }));
+  //     }, ms);
+  //   };
+  // };
+
   static Gateway = class extends EventEmitter {
-    token: string;
-    interval: any;
-    ws: WebSocket;
-    payload: object;
+    private token: string;
+    private ws: WebSocket | null;
+    private messageCount: number;
+    private heartbeatInterval: NodeJS.Timeout | null;
+    private reconnectInterval: number;
+    private payload: any;
 
     constructor(token: string) {
       super();
       this.token = token;
-      this.ws = new WebSocket("wss://gateway.discord.gg/?v=6&encoding=json");
+      this.ws = null;
+      this.messageCount = 0;
+      this.heartbeatInterval = null;
+      this.reconnectInterval = 5000; // Interval to wait before reconnecting (5 seconds)
+
       this.payload = {
         op: 2,
         d: {
@@ -123,34 +180,83 @@ class Selfcore {
           },
         },
       };
+
+      this.connect();
+    }
+
+    private heartbeat(ms: number): void {
+      if (this.heartbeatInterval) {
+        clearInterval(this.heartbeatInterval);
+      }
+      this.heartbeatInterval = setInterval(() => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          console.log("Heart Beat");
+          console.log("Message count: ", this.messageCount);
+          this.ws.send(JSON.stringify({ op: 1, d: this.messageCount }));
+          this.messageCount = 0; // Reset the message count after sending heartbeat
+        } else {
+          console.log("WebSocket not open. Skipping heartbeat.");
+        }
+      }, ms);
+    }
+
+    private connect(): void {
+      this.ws = new WebSocket("wss://gateway.discord.gg/?v=6&encoding=json");
+
       this.ws.on("open", () => {
-        this.ws.send(JSON.stringify(this.payload));
+        console.log("WebSocket connection opened");
+        if (this.ws!.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify(this.payload));
+        }
       });
 
-      this.ws.on("message", (data: string) => {
-        let payload = JSON.parse(data);
-        const { t, event, op, d } = payload;
+      this.ws.on("message", (data: WebSocket.Data) => {
+        const payload = JSON.parse(data.toString());
+        const { t, op, d } = payload;
 
+        if (op !== 11) {
+          // If it's not a heartbeat acknowledgment message
+          this.messageCount++; // Increment message counter
+        }
+
+        console.log(op);
         switch (op) {
           case 10:
+            console.log("Heartbeat request");
             const { heartbeat_interval } = d;
-            this.interval = this.heartbeat(heartbeat_interval);
+            this.heartbeat(heartbeat_interval);
             this.emit("ready");
             break;
         }
 
         switch (t) {
           case "MESSAGE_CREATE":
-            // console.log(d);
             this.emit("message", d);
+            break;
         }
       });
+
+      this.ws.on("close", () => {
+        console.log("WebSocket closed");
+        this.emit("ws_closed");
+        this.reconnect();
+      });
+
+      this.ws.on("error", (error: Error) => {
+        console.log("WebSocket error", error);
+        this.emit("ws_error");
+        this.reconnect();
+      });
     }
-    heartbeat = (ms: number) => {
-      return setInterval(() => {
-        this.ws.send(JSON.stringify({ op: 1, d: null }));
-      }, ms);
-    };
+
+    private reconnect(): void {
+      console.log(
+        `Reconnecting in ${this.reconnectInterval / 1000} seconds...`
+      );
+      setTimeout(() => {
+        this.connect();
+      }, this.reconnectInterval);
+    }
   };
 }
 
